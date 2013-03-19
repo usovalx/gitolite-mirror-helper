@@ -8,8 +8,17 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
+
+type ProcMonConf struct {
+	Host    string
+	PreCmd  string
+	PreArgs string
+	Cmd     string
+	Args    string
+}
 
 const (
 	minDelay          = 1 * time.Second
@@ -17,21 +26,41 @@ const (
 	goodTimeThreshold = 30 * time.Second
 )
 
-func ProcMon(dieCh <-chan bool, logger *log.Logger, ident string, args []string) <-chan bool {
+func ProcMon(dieCh <-chan bool,
+	logger *log.Logger, ident string, cnf *ProcMonConf) <-chan bool {
 	c := make(chan bool, 1)
-	go procMonLoop(dieCh, c, logger, ident, args)
+	go procMonLoop(dieCh, c, logger, ident, cnf)
 	return c
 }
 
-func procMonLoop(dieCh <-chan bool, doneCh chan<- bool, logger *log.Logger,
-	ident string, args []string) {
-
+func procMonLoop(dieCh <-chan bool, doneCh chan<- bool,
+	logger *log.Logger, ident string, cnf *ProcMonConf) {
 	defer func() { doneCh <- true }()
 
+	// construct & split commands
+	preCmdArr := splitCommand(cnf.PreCmd, cnf.PreArgs, cnf.Host)
+	cmdArr := splitCommand(cnf.Cmd, cnf.Args, cnf.Host)
+
+	// First run pre-command
 	stop := false
+	logger.Printf("%s: starting %v", ident+".pre", preCmdArr)
+	cmd, slaveDied := startSlave(logger, ident+".pre", preCmdArr)
+waitForPreCmd:
+	select {
+	case _ = <-dieCh:
+		logger.Printf("%s.pre: exit request: killing slave", ident)
+		stop = true
+		cmd.Process.Signal(os.Interrupt)
+		goto waitForPreCmd
+	case _ = <-slaveDied:
+		if stop {
+			return
+		}
+	}
+
+	// And then command itself
+	stop = false
 	startDelay := time.Duration(0)
-	slaveDied := make(chan bool, 1)
-	cmd := (*exec.Cmd)(nil)
 	for !stop {
 		// part 1 -- starting new slave process
 		t := time.NewTimer(startDelay)
@@ -40,14 +69,15 @@ func procMonLoop(dieCh <-chan bool, doneCh chan<- bool, logger *log.Logger,
 			t.Stop()
 			return
 		case _ = <-t.C:
-			logger.Printf("%s: starting %s", ident, args)
-			cmd, slaveDied = startSlave(logger, ident, args)
+			logger.Printf("%s: starting %v", ident, cmdArr)
+			cmd, slaveDied = startSlave(logger, ident, cmdArr)
 		}
 
 	waitForIt:
 		// part 2 -- monitoring running slave process
 		select {
 		case _ = <-dieCh:
+			logger.Printf("%s: exit request: killing slave", ident)
 			stop = true
 			cmd.Process.Signal(os.Interrupt)
 			goto waitForIt
@@ -63,7 +93,7 @@ func procMonLoop(dieCh <-chan bool, doneCh chan<- bool, logger *log.Logger,
 					startDelay = maxDelay
 				}
 			}
-			logger.Printf("%s: slave died, restarting in %8.3f seconds", ident, float64(startDelay)/float64(time.Second))
+			logger.Printf("%s: slave died, restarting in %g second(s)", ident, float64(startDelay)/float64(time.Second))
 			cmd = nil
 		}
 	}
@@ -94,6 +124,12 @@ func startSlave(logger *log.Logger, ident string, args []string) (cmd *exec.Cmd,
 		}()
 	}
 	return
+}
+
+func splitCommand(cmd, args, host string) []string {
+	s := strings.Replace(cmd, "%args", args, -1)
+	s = strings.Replace(s, "%host", host, -1)
+	return strings.Fields(s)
 }
 
 type LogWriter struct {
