@@ -2,10 +2,11 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
-	_ "os/signal"
-	"time"
+	"os/signal"
+	"syscall"
 )
 
 type Config struct {
@@ -21,24 +22,29 @@ type ProcMonCtl struct {
 var logger = log.New(os.Stderr, "", log.LstdFlags)
 var configName = flag.String("c", "", "config file")
 
+// host -> ProcMonCtl
+var procMons = make(map[string]ProcMonCtl)
+
 func main() {
 	flag.Parse()
 
 	if *configName == "" {
-		logger.Fatal("No config")
+		usage()
 	}
 
 	cnf, err := ReadConfig(*configName)
 	if err != nil {
-		logger.Fatalf("Error reading config: %v", err)
-	}
-	if err := CheckConfig(cnf); err != nil {
-		logger.Fatalf("Invalid config: %v", err)
+		logger.Fatalf("Reading config: %v", err)
 	}
 	logger.Printf("Config loaded: %#v", cnf)
 
-	// start all processes
-	procMons := make(map[string]ProcMonCtl)
+	// install signal handlers
+	dieSigCh := make(chan os.Signal, 10)
+	signal.Notify(dieSigCh, os.Interrupt, syscall.SIGTERM)
+	reloadSigCh := make(chan os.Signal, 10)
+	signal.Notify(reloadSigCh, syscall.SIGHUP)
+
+	// start all monitored processes
 	for _, h := range cnf.ProcMonHosts {
 		c := *cnf.ProcMon
 		c.Host = h
@@ -47,24 +53,56 @@ func main() {
 		procMons[h] = ProcMonCtl{stopCh, resCh}
 	}
 
-	// FIXME: signal handling to shutdown child processes
-	// HUP -> reload config & restart
-	// INT -> shutdown
-	// TERM -> shutdown
-	sigCh := make(chan os.Signal, 10)
-	//signal.Notify(sigCh, os.Interrupt)
-	go func() {
-		for {
-			s := <-sigCh
-			logger.Printf("Signal: %d", s)
-		}
-	}()
+	stopped := make(chan bool)
+	stopInProgress := false
+	reloadInProgress := false
+	for {
+		select {
+		case sig := <-dieSigCh:
+			logger.Printf("Signal %d: shutting down", sig)
+			if !stopInProgress {
+				stopInProgress = true
+				go stopSlaves(stopped)
+			}
 
-	time.Sleep(100 * time.Second)
+		case _ = <-stopped:
+			os.Exit(0)
+
+		case sig := <-reloadSigCh:
+			if stopInProgress {
+				logger.Printf("Signal %d: can't reload -- shutting down", sig)
+			} else if reloadInProgress {
+				logger.Printf("Signal %d: can't reload -- already doing it", sig)
+			} else {
+				logger.Printf("Signal %d: reloading", sig)
+				newCnf, err := ReadConfig(*configName)
+				if err != nil {
+					// NOT fatal error -- just ignore new config
+					logger.Printf("Reloading config: %v", err)
+					continue
+				}
+				if ConfigEqual(newCnf, cnf) {
+					logger.Printf("Config hasn't changed")
+				}
+			}
+		}
+	}
+}
+
+func stopSlaves(done chan<- bool) {
 	for _, ctl := range procMons {
 		ctl.stopCh <- true
 	}
 	for _, ctl := range procMons {
 		_ = <-ctl.diedCh
 	}
+	done <- true
+}
+
+func usage() {
+	usage := `Usage: gitolite-mirror-helper [flags]
+some more stuff
+`
+	fmt.Fprint(os.Stderr, usage)
+	os.Exit(1)
 }

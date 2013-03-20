@@ -10,6 +10,17 @@ import (
 	"strings"
 )
 
+func ConfigEqual(c1, c2 *Config) bool {
+	r1 := (len(c1.ProcMonHosts) == len(c2.ProcMonHosts)) && (*c1.ProcMon == *c2.ProcMon)
+	if r1 {
+		for i := 0; r1 && i < len(c1.ProcMonHosts); i++ {
+			r1 = r1 && c1.ProcMonHosts[i] == c2.ProcMonHosts[i]
+		}
+	}
+
+	return r1
+}
+
 func ReadConfig(fname string) (c *Config, e error) {
 	f, e := os.Open(fname)
 	if e != nil {
@@ -19,10 +30,14 @@ func ReadConfig(fname string) (c *Config, e error) {
 
 	c = &Config{}
 	e = json.NewDecoder(RemoveComments(f)).Decode(c)
+	if e != nil {
+		return
+	}
+	e = checkConfig(c)
 	return
 }
 
-func CheckConfig(c *Config) error {
+func checkConfig(c *Config) error {
 	// FIXME: ProcMon is the only stuff we do so far,
 	// so it must be configured
 	if len(c.ProcMonHosts) == 0 {
