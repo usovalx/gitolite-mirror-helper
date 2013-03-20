@@ -1,27 +1,51 @@
 package main
 
 import (
-	"fmt"
+	"flag"
 	"log"
 	"os"
 	_ "os/signal"
 	"time"
 )
 
-var mainLogger = log.New(os.Stderr, "", log.LstdFlags)
+type Config struct {
+	ProcMonHosts []string
+	ProcMon      *ProcMonConf
+}
+
+type ProcMonCtl struct {
+	stopCh chan<- bool
+	diedCh <-chan bool
+}
+
+var logger = log.New(os.Stderr, "", log.LstdFlags)
+var configName = flag.String("c", "", "config file")
 
 func main() {
-	fmt.Printf("Starting\n")
+	flag.Parse()
 
-	a := &ProcMonConf{
-		Host:    "repo-ln",
-		PreCmd:  "ssh -O exit %host",
-		PreArgs: "",
-		Cmd:     "echo ssh -M %host",
-		Args:    ""}
+	if *configName == "" {
+		logger.Fatal("No config")
+	}
 
-	stopCh := make(chan bool)
-	resCh := ProcMon(stopCh, mainLogger, a.Host, a)
+	cnf, err := ReadConfig(*configName)
+	if err != nil {
+		logger.Fatalf("Error reading config: %v", err)
+	}
+	if err := CheckConfig(cnf); err != nil {
+		logger.Fatalf("Invalid config: %v", err)
+	}
+	logger.Printf("Config loaded: %#v", cnf)
+
+	// start all processes
+	procMons := make(map[string]ProcMonCtl)
+	for _, h := range cnf.ProcMonHosts {
+		c := *cnf.ProcMon
+		c.Host = h
+		stopCh := make(chan bool, 1)
+		resCh := ProcMonRun(stopCh, c.Host, &c)
+		procMons[h] = ProcMonCtl{stopCh, resCh}
+	}
 
 	// FIXME: signal handling to shutdown child processes
 	// HUP -> reload config & restart
@@ -32,11 +56,15 @@ func main() {
 	go func() {
 		for {
 			s := <-sigCh
-			mainLogger.Printf("Signal: %d", s)
+			logger.Printf("Signal: %d", s)
 		}
 	}()
 
 	time.Sleep(100 * time.Second)
-	stopCh <- true
-	_ = <-resCh
+	for _, ctl := range procMons {
+		ctl.stopCh <- true
+	}
+	for _, ctl := range procMons {
+		_ = <-ctl.diedCh
+	}
 }

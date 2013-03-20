@@ -5,7 +5,6 @@
 package main
 
 import (
-	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -26,15 +25,15 @@ const (
 	goodTimeThreshold = 30 * time.Second
 )
 
-func ProcMon(dieCh <-chan bool,
-	logger *log.Logger, ident string, cnf *ProcMonConf) <-chan bool {
+func ProcMonRun(dieCh <-chan bool,
+	ident string, cnf *ProcMonConf) <-chan bool {
 	c := make(chan bool, 1)
-	go procMonLoop(dieCh, c, logger, ident, cnf)
+	go procMonMain(dieCh, c, ident, cnf)
 	return c
 }
 
-func procMonLoop(dieCh <-chan bool, doneCh chan<- bool,
-	logger *log.Logger, ident string, cnf *ProcMonConf) {
+func procMonMain(dieCh <-chan bool, doneCh chan<- bool,
+	ident string, cnf *ProcMonConf) {
 	defer func() { doneCh <- true }()
 
 	// construct & split commands
@@ -44,7 +43,7 @@ func procMonLoop(dieCh <-chan bool, doneCh chan<- bool,
 	// First run pre-command
 	stop := false
 	logger.Printf("%s: starting %v", ident+".pre", preCmdArr)
-	cmd, slaveDied := startSlave(logger, ident+".pre", preCmdArr)
+	cmd, slaveDied := startSlave(ident+".pre", preCmdArr)
 waitForPreCmd:
 	select {
 	case _ = <-dieCh:
@@ -70,7 +69,7 @@ waitForPreCmd:
 			return
 		case _ = <-t.C:
 			logger.Printf("%s: starting %v", ident, cmdArr)
-			cmd, slaveDied = startSlave(logger, ident, cmdArr)
+			cmd, slaveDied = startSlave(ident, cmdArr)
 		}
 
 	waitForIt:
@@ -100,11 +99,11 @@ waitForPreCmd:
 	return
 }
 
-func startSlave(logger *log.Logger, ident string, args []string) (cmd *exec.Cmd, ch chan bool) {
+func startSlave(ident string, args []string) (cmd *exec.Cmd, ch chan bool) {
 	cmd = exec.Command(args[0], args[1:]...)
 	cmd.Stdin = nil
-	cmd.Stdout = &LogWriter{ident + ".stdout", logger}
-	cmd.Stderr = &LogWriter{ident + ".stderr", logger}
+	cmd.Stdout = &LogWriter{ident + ".stdout"}
+	cmd.Stderr = &LogWriter{ident + ".stderr"}
 
 	ch = make(chan bool, 1)
 	err := cmd.Start()
@@ -133,8 +132,7 @@ func splitCommand(cmd, args, host string) []string {
 }
 
 type LogWriter struct {
-	ident  string
-	logger *log.Logger
+	ident string
 }
 
 func (l *LogWriter) Write(b []byte) (n int, err error) {
@@ -143,6 +141,6 @@ func (l *LogWriter) Write(b []byte) (n int, err error) {
 		b = b[:n-1]
 	}
 
-	l.logger.Printf("%s: %s", l.ident, b)
+	logger.Printf("%s: %s", l.ident, b)
 	return n, nil
 }

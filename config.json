@@ -1,0 +1,14 @@
+// basic config -- just monitoring is implemented for now
+{
+    // list of hosts to substitute for %host bit in the commands
+    "ProcMonHosts": [ "host1", "host2" ],
+
+    // template for all processes
+    "ProcMon": {
+        // %host and %args will be substituted
+        //"PreArgs": "",
+        "PreCmd": "echo ssh -O exit %host",
+        //"Args": "",
+        "Cmd": "echo ssh -M %host"
+    }
+}
