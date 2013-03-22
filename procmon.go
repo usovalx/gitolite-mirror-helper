@@ -40,20 +40,26 @@ func procMonMain(dieCh <-chan bool, doneCh chan<- bool,
 	preCmdArr := splitCommand(cnf.PreCmd, cnf.PreArgs, cnf.Host)
 	cmdArr := splitCommand(cnf.Cmd, cnf.Args, cnf.Host)
 
+	var stop bool
+	var cmd *exec.Cmd
+	var slaveDied chan bool
+
 	// First run pre-command
-	stop := false
-	logger.Printf("%s: starting %v", ident+".pre", preCmdArr)
-	cmd, slaveDied := startSlave(ident+".pre", preCmdArr)
-waitForPreCmd:
-	select {
-	case _ = <-dieCh:
-		logger.Printf("%s.pre: exit request: killing slave", ident)
-		stop = true
-		cmd.Process.Signal(os.Interrupt)
-		goto waitForPreCmd
-	case _ = <-slaveDied:
-		if stop {
-			return
+	if len(preCmdArr) > 0 {
+		stop = false
+		logger.Printf("%s: starting %v", ident+".pre", preCmdArr)
+		cmd, slaveDied = startSlave(ident+".pre", preCmdArr)
+		waitForPreCmd:
+		select {
+		case _ = <-dieCh:
+			logger.Printf("%s.pre: exit request: killing slave", ident)
+			stop = true
+			cmd.Process.Signal(os.Interrupt)
+			goto waitForPreCmd
+		case _ = <-slaveDied:
+			if stop {
+				return
+			}
 		}
 	}
 
