@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 type Config struct {
@@ -36,6 +37,10 @@ func main() {
 	if err != nil {
 		logger.Fatalf("Reading config: %v", err)
 	}
+	cnfSt, err := os.Stat(*configName)
+	if err != nil {
+		logger.Fatalf("Reading config: %v", err)
+	}
 	logger.Printf("Config loaded: %#v", cnf)
 
 	// install signal handlers
@@ -48,6 +53,7 @@ func main() {
 	procMons = startSlaves(cnf)
 
 	stopped := make(chan bool)
+	checkConfig := time.Tick(30 * time.Second)
 	stopInProgress := false
 	reloadInProgress := false
 	for {
@@ -77,24 +83,51 @@ func main() {
 				logger.Printf("Signal %d: can't reload -- already doing it", sig)
 			} else {
 				logger.Printf("Signal %d: reloading", sig)
-				newCnf, err := ReadConfig(*configName)
-				if err != nil {
-					// NOT fatal error -- just ignore new config
-					logger.Printf("Reloading config: %v", err)
-					continue
+				if newCnf := tryReload(*configName, cnf); newCnf != nil {
+					// FIXME: the most stupid approach to restarting
+					// stop everything and start new ones instead
+					reloadInProgress = true
+					cnf = newCnf
+					go stopSlaves(stopped)
 				}
-				if ConfigEqual(newCnf, cnf) {
-					logger.Printf("Config hasn't changed")
-					continue
+			}
+
+		case _ = <-checkConfig:
+			if reloadInProgress || stopInProgress {
+				continue
+			}
+			st, err := os.Stat(*configName)
+			if err != nil {
+				logger.Printf("WARN: Can't stat config %q", *configName)
+				continue
+			}
+			if st.Size() != cnfSt.Size() || st.ModTime() != cnfSt.ModTime() {
+				logger.Printf("It seems config has changed, reloading it")
+				cnfSt = st
+				if newCnf := tryReload(*configName, cnf); newCnf != nil {
+					// FIXME: the most stupid approach to restarting
+					// stop everything and start new ones instead
+					reloadInProgress = true
+					cnf = newCnf
+					go stopSlaves(stopped)
 				}
-				// FIXME: the most stupid approach to restarting
-				// stop everything and start new ones instead
-				reloadInProgress = true
-				cnf = newCnf
-				go stopSlaves(stopped)
 			}
 		}
 	}
+}
+
+func tryReload(name string, old *Config) *Config {
+	newCnf, err := ReadConfig(*configName)
+	if err != nil {
+		// NOT fatal error -- just ignore new config
+		logger.Printf("Reloading config: %v", err)
+		return nil
+	}
+	if ConfigEqual(newCnf, old) {
+		logger.Printf("Config hasn't changed")
+		return nil
+	}
+	return newCnf
 }
 
 func startSlaves(cnf *Config) map[string]ProcMonCtl {
