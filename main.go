@@ -45,13 +45,7 @@ func main() {
 	signal.Notify(reloadSigCh, syscall.SIGHUP)
 
 	// start all monitored processes
-	for _, h := range cnf.ProcMonHosts {
-		c := *cnf.ProcMon
-		c.Host = h
-		stopCh := make(chan bool, 1)
-		resCh := ProcMonRun(stopCh, c.Host, &c)
-		procMons[h] = ProcMonCtl{stopCh, resCh}
-	}
+	procMons = startSlaves(cnf)
 
 	stopped := make(chan bool)
 	stopInProgress := false
@@ -66,7 +60,15 @@ func main() {
 			}
 
 		case _ = <-stopped:
-			os.Exit(0)
+			if stopInProgress {
+				os.Exit(0)
+			} else {
+				if !reloadInProgress { // unreachable
+					panic("Stopped when not reloading or shutting down?")
+				}
+				reloadInProgress = false
+				procMons = startSlaves(cnf)
+			}
 
 		case sig := <-reloadSigCh:
 			if stopInProgress {
@@ -83,10 +85,28 @@ func main() {
 				}
 				if ConfigEqual(newCnf, cnf) {
 					logger.Printf("Config hasn't changed")
+					continue
 				}
+				// FIXME: the most stupid approach to restarting
+				// stop everything and start new ones instead
+				reloadInProgress = true
+				cnf = newCnf
+				go stopSlaves(stopped)
 			}
 		}
 	}
+}
+
+func startSlaves(cnf *Config) map[string]ProcMonCtl {
+	handles := make(map[string]ProcMonCtl)
+	for _, h := range cnf.ProcMonHosts {
+		c := *cnf.ProcMon
+		c.Host = h
+		stopCh := make(chan bool, 1)
+		resCh := ProcMonRun(stopCh, c.Host, &c)
+		handles[h] = ProcMonCtl{stopCh, resCh}
+	}
+	return handles
 }
 
 func stopSlaves(done chan<- bool) {
