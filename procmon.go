@@ -25,6 +25,33 @@ const (
 	goodTimeThreshold = 30 * time.Second
 )
 
+type ProcMoner interface {
+	Restart()
+	Reconf(cnf *ProcMonConf)
+	Stop()
+}
+
+type procMon struct {
+	cmd		chan interface{}
+	stopped	chan bool
+}
+
+func procMonMain2(cmd <-chan interface{}, stopped chan<- bool,
+	ident string, cnf *ProcMonConf) {
+
+	normalExit := false
+	defer func() { if !normalExit { stopped <- true } } ()
+
+}
+
+
+
+
+
+
+
+
+
 func ProcMonRun(dieCh <-chan bool,
 	ident string, cnf *ProcMonConf) <-chan bool {
 	c := make(chan bool, 1)
